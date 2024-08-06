@@ -2,3 +2,4 @@ fastapi
 uvicorn
 librosa
 numpy
+python-multipart
