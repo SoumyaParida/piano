@@ -7,9 +7,10 @@ from typing import Dict
 app = FastAPI()
 
 def extract_features(audio_file):
-    y, sr = librosa.load(audio_file, sr=None)
+    y, sr = librosa.load(audio_file)
     onset_env = librosa.onset.onset_strength(y=y, sr=sr)
-    pitches, magnitudes = librosa.core.piptrack(y=y, sr=sr)
+    pitches, magnitudes = librosa.core.piptrack(y=y, sr=sr, threshold=0.2,
+                                       ref=np.mean)
     onsets = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr)
     times = librosa.frames_to_time(onsets, sr=sr)
     durations = np.diff(times, append=librosa.get_duration(y=y, sr=sr))
@@ -20,6 +21,124 @@ def extract_features(audio_file):
 def trim_features_to_same_length(*features):
     min_length = min(len(feature) for feature in features)
     return [feature[:min_length] for feature in features]
+
+def compute_tempo_consistency(orig_times, rec_times) -> float:
+    # Compute the intervals between notes
+    orig_intervals = np.diff(orig_times)
+    rec_intervals = np.diff(rec_times)
+    
+    # Ensure both intervals have the same length for comparison
+    min_length = min(len(orig_intervals), len(rec_intervals))
+    orig_intervals = orig_intervals[:min_length]
+    rec_intervals = rec_intervals[:min_length]
+    
+    if len(orig_intervals) == 0 or len(rec_intervals) == 0:
+        return 0  # No intervals to compare
+    
+    # Compute the differences between corresponding intervals
+    interval_diff = np.abs(orig_intervals - rec_intervals)
+    
+    # Calculate mean and standard deviation of the interval differences
+    mean_diff = np.mean(interval_diff)
+    std_diff = np.std(interval_diff)
+    
+    # Normalize the mean difference
+    mean_diff_norm = mean_diff / (np.max(orig_intervals) + 1e-10)  # Prevent division by zero
+    tempo_score = 10 - (mean_diff_norm * 10 + std_diff * 10)  # Adjust sensitivity and scale
+    
+    return max(0, tempo_score)  # Ensure non-negative scores
+
+def compute_pitch_accuracy(orig_pitches, rec_pitches) -> float:
+    tolerance = 1.0  # Tolerance in semitones for pitch accuracy
+
+    # Ensure pitches are in the same shape
+    min_length = min(orig_pitches.shape[1], rec_pitches.shape[1])
+    orig_pitches = orig_pitches[:, :min_length]
+    rec_pitches = rec_pitches[:, :min_length]
+
+    # Compute the pitch differences
+    pitch_diffs = np.abs(orig_pitches - rec_pitches)
+    
+    # Determine the number of notes within tolerance
+    within_tolerance = pitch_diffs <= tolerance
+    accuracy_scores = np.mean(np.sum(within_tolerance, axis=0) / within_tolerance.shape[0])
+    
+    # Adjust accuracy score
+    max_score = 10
+    if accuracy_scores == 1.0:
+        pitch_accuracy_score = max_score
+    else:
+        pitch_accuracy_score = max_score * (accuracy_scores)
+    
+    return round(min(pitch_accuracy_score, 10))  # Ensure score is within 0-10
+
+
+def compute_note_duration_accuracy(orig_durations, rec_durations) -> float:
+    # Ensure arrays are at least 2D
+    if len(orig_durations.shape) < 2:
+        orig_durations = np.expand_dims(orig_durations, axis=0)
+    if len(rec_durations.shape) < 2:
+        rec_durations = np.expand_dims(rec_durations, axis=0)
+    # Ensure durations are in the same shape
+    min_length = min(orig_durations.shape[1], rec_durations.shape[1])
+    
+    # Slice arrays to the same length
+    orig_durations = orig_durations[:, :min_length]
+    rec_durations = rec_durations[:, :min_length]
+    
+    # Check if arrays are empty after slicing
+    if orig_durations.size == 0 or rec_durations.size == 0:
+        return 0  # Or handle as needed
+    
+    # Compute the difference in note durations
+    duration_diffs = np.abs(orig_durations - rec_durations)
+    
+    # Average difference in note durations
+    avg_duration_diff = np.mean(duration_diffs)
+    
+    # Assuming a maximum allowable duration difference, adjust if needed
+    max_allowed_diff = np.max(orig_durations)  # or a fixed value
+    if max_allowed_diff == 0:  # Prevent division by zero
+        return 10
+    
+    duration_score = max(0, 10 - (avg_duration_diff / max_allowed_diff) * 10)
+    
+    return round(duration_score)
+
+def compute_articulation_accuracy(orig_durations, rec_durations) -> float:
+    # Ensure arrays are at least 2D
+    if len(orig_durations.shape) < 2:
+        orig_durations = np.expand_dims(orig_durations, axis=0)
+    if len(rec_durations.shape) < 2:
+        rec_durations = np.expand_dims(rec_durations, axis=0)
+    
+    # Ensure durations are in the same shape
+    min_length = min(orig_durations.shape[1], rec_durations.shape[1])
+    
+    # Slice arrays to the same length if they are longer
+    orig_durations = orig_durations[:, :min_length]
+    rec_durations = rec_durations[:, :min_length]
+    
+    # Check if arrays are empty after slicing
+    if orig_durations.size == 0 or rec_durations.size == 0:
+        return 0  # Or handle as needed
+    
+    # Compute the differences in the articulation (e.g., note spacing)
+    orig_articulation = np.diff(orig_durations, axis=1)
+    rec_articulation = np.diff(rec_durations, axis=1)
+    
+    # Calculate difference in articulation
+    articulation_diffs = np.abs(orig_articulation - rec_articulation)
+    
+    # Average articulation difference
+    avg_articulation_diff = np.mean(articulation_diffs)
+    
+    # Assuming a maximum allowable articulation difference, adjust if needed
+    max_allowed_diff = np.max(orig_articulation) if np.max(orig_articulation) != 0 else 1  # Prevent division by zero
+    articulation_score = max(0, 10 - (avg_articulation_diff / max_allowed_diff) * 10)
+    
+    return round(articulation_score)
+
 
 def compare_features(original_features, recorded_features) -> Dict[str, float]:
     scores = {}
@@ -38,33 +157,30 @@ def compare_features(original_features, recorded_features) -> Dict[str, float]:
 
 
     # # Compare Pitch Accuracy
-    pitch_accuracy = np.mean([np.any(np.isclose(op, rp, atol=0.5)) for op, rp in zip(orig_pitches.T, rec_pitches.T) if np.any(op) and np.any(rp)])
-    scores['Pitch Accuracy'] = round(pitch_accuracy * 10)
+    pitch_accuracy = compute_pitch_accuracy(orig_pitches, rec_pitches)
+    scores['Pitch Accuracy'] = pitch_accuracy
     
     # Compare Timing/Rhythm
     timing_diff = np.mean(np.abs(orig_times - rec_times))
     scores['Timing/Rhythm'] = round(max(0, 10 - timing_diff))
     
     # Compare Note Duration
-    duration_diff = np.mean(np.abs(orig_durations - rec_durations))
-    scores['Note Duration'] = round(max(0, 10 - duration_diff))
+    note_duration_accuracy = compute_note_duration_accuracy(orig_durations, rec_durations)
+    scores['Note Duration'] = note_duration_accuracy
     
     # Evaluate Tempo Consistency
-    orig_intervals = np.diff(orig_times)
-    rec_intervals = np.diff(rec_times)
-    orig_intervals, rec_intervals = trim_features_to_same_length(orig_intervals, rec_intervals)
-    tempo_diff = np.std(orig_intervals - rec_intervals)
-    scores['Tempo Consistency'] = round(max(0, 10 - tempo_diff))
+    tempo_score = compute_tempo_consistency(orig_times, rec_times)
+    scores['Tempo Consistency'] = round(tempo_score)
     
     # Compare Dynamics based on absolute differences and standard deviation
     dynamics_diff = np.mean(np.abs(orig_dynamics - rec_dynamics))
     dynamics_std = np.std(np.abs(orig_dynamics - rec_dynamics))
-    dynamics_score = max(0, 10 - ((dynamics_diff * 15) + (dynamics_std * 30)))  # Adjusted sensitivity factor
+    dynamics_score = max(0, 10 - ((dynamics_diff * 20) + (dynamics_std * 30)))  # Adjusted sensitivity factor
     scores['Dynamics'] = round(dynamics_score)
     
     # Check Articulation
-    articulation_diff = np.mean(np.abs(np.diff(rec_durations) - np.diff(orig_durations)))
-    scores['Articulation'] = round(max(0, 10 - articulation_diff))
+    articulation_score = compute_articulation_accuracy(orig_durations, rec_durations)
+    scores['Articulation'] = round(articulation_score)
     
     # Assess Consistency
     consistency = np.mean([
