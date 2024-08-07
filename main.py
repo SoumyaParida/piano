@@ -32,7 +32,12 @@ def compare_features(original_features, recorded_features) -> Dict[str, float]:
     orig_durations, rec_durations = trim_features_to_same_length(orig_durations, rec_durations)
     orig_dynamics, rec_dynamics = trim_features_to_same_length(orig_dynamics, rec_dynamics)
     
-    # Compare Pitch Accuracy
+    # Normalize dynamics
+    orig_dynamics = (orig_dynamics - np.min(orig_dynamics)) / (np.max(orig_dynamics) - np.min(orig_dynamics))
+    rec_dynamics = (rec_dynamics - np.min(rec_dynamics)) / (np.max(rec_dynamics) - np.min(rec_dynamics))
+
+
+    # # Compare Pitch Accuracy
     pitch_accuracy = np.mean([np.any(np.isclose(op, rp, atol=0.5)) for op, rp in zip(orig_pitches.T, rec_pitches.T) if np.any(op) and np.any(rp)])
     scores['Pitch Accuracy'] = round(pitch_accuracy * 10)
     
@@ -51,9 +56,10 @@ def compare_features(original_features, recorded_features) -> Dict[str, float]:
     tempo_diff = np.std(orig_intervals - rec_intervals)
     scores['Tempo Consistency'] = round(max(0, 10 - tempo_diff))
     
-    # Compare Dynamics
+    # Compare Dynamics based on absolute differences and standard deviation
     dynamics_diff = np.mean(np.abs(orig_dynamics - rec_dynamics))
-    dynamics_score = max(0, 10 - (dynamics_diff * 30))
+    dynamics_std = np.std(np.abs(orig_dynamics - rec_dynamics))
+    dynamics_score = max(0, 10 - ((dynamics_diff * 15) + (dynamics_std * 30)))  # Adjusted sensitivity factor
     scores['Dynamics'] = round(dynamics_score)
     
     # Check Articulation
