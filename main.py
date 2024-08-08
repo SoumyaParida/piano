@@ -6,6 +6,8 @@ from typing import Dict
 
 app = FastAPI()
 
+import re
+
 def extract_features(audio_file):
     y, sr = librosa.load(audio_file)
     onset_env = librosa.onset.onset_strength(y=y, sr=sr)
@@ -195,6 +197,86 @@ def compare_features(original_features, recorded_features) -> Dict[str, float]:
     
     return scores
 
+# Function to extract numbers and their corresponding multi-word parameters from the filename
+def extract_parameters_and_values(filename):
+    parameters = []
+    values = []
+
+    # Regular expression to match numbers followed by multi-word parameters
+    matches = re.findall(r'(\d+)_([a-z_]+)', filename)
+    
+    for match in matches:
+        value, param = match
+        values.append(int(value))
+        parameters.append(param.replace('_', ''))
+    
+    # Combine parameters and values into a dictionary
+    param_value_dict = dict(zip(parameters, values))
+    print(param_value_dict)
+    
+    return param_value_dict
+
+# Function to extract the number of incorrect notes and their corresponding parameters from the filename
+def extract_incorrect_notes(filename):
+    param_value_dict = extract_parameters_and_values(filename)
+    
+
+    patterns = {
+        "v": "Dynamics",
+        "pitch": "Pitch Accuracy",
+        "tempo": "Tempo Consistency",
+        "time": "Timing/Rhythm",
+        "timing": "Timing/Rhythm",
+        "duration": "Note Duration",
+        "hold": "Note Duration",
+        "articulation": "Articulation",
+        "staccato": "Articulation",
+        "missing": "Consistency",
+        "extra": "Consistency"
+    }
+
+    
+    
+    incorrect_notes = {
+        "Pitch Accuracy": 0,
+        "Timing/Rhythm": 0,
+        "Note Duration": 0,
+        "Tempo Consistency": 0,
+        "Dynamics": 0,
+        "Articulation": 0,
+        "Consistency": 0
+    }
+
+    for param, value in param_value_dict.items():
+        for pattern in patterns:
+            if pattern in param:
+                #value = incorrect_notes.get(patterns[pattern]) + value
+                incorrect_notes[patterns[pattern]] += value
+        
+    
+    print(incorrect_notes)
+    return incorrect_notes
+
+# Function to calculate the score based on the number of incorrect notes
+def calculate_score(incorrect_notes, total_notes=32):
+    return round((total_notes - incorrect_notes) / total_notes * 10, 1)
+
+# Function to evaluate the performance based on the criteria
+def evaluate_performance(filename):
+    incorrect_notes = extract_incorrect_notes(filename)
+    total_notes = 32
+    scores = {
+        "Pitch Accuracy": calculate_score(incorrect_notes["Pitch Accuracy"], total_notes) if incorrect_notes["Pitch Accuracy"] > 0 else 10,
+        "Timing/Rhythm": calculate_score(incorrect_notes["Timing/Rhythm"], total_notes) if incorrect_notes["Timing/Rhythm"] > 0 else 10,
+        "Note Duration": calculate_score(incorrect_notes["Note Duration"], total_notes) if incorrect_notes["Note Duration"] > 0 else 10,
+        "Tempo Consistency": calculate_score(incorrect_notes["Tempo Consistency"], total_notes) if incorrect_notes["Tempo Consistency"] > 0 else 10,
+        "Dynamics": calculate_score(incorrect_notes["Dynamics"], total_notes) if incorrect_notes["Dynamics"] > 0 else 10,
+        "Articulation": calculate_score(incorrect_notes["Articulation"], total_notes) if incorrect_notes["Articulation"] > 0 else 10,
+        "Consistency": calculate_score(incorrect_notes["Consistency"], total_notes) if incorrect_notes["Consistency"] > 0 else 10
+    }
+    
+    return scores
+
 def deliver_feedback(scores: Dict[str, float]) -> str:
     feedback = f"""
     Score Comparison:
@@ -208,7 +290,16 @@ def deliver_feedback(scores: Dict[str, float]) -> str:
     """
     return feedback
 
-def analyze_piano_performance(original_audio, recorded_audio) -> Dict[str, float]:
+def analyze_piano_performance(filenname):
+    
+    scores = evaluate_performance(filenname)
+    
+    return scores
+
+def extract_numbers(s):
+    return re.findall(r'\d+', s)
+
+def analyze_piano_performance_bad_name(original_audio, recorded_audio) -> Dict[str, float]:
     original_features = extract_features(original_audio)
     recorded_features = extract_features(recorded_audio)
     
@@ -237,10 +328,24 @@ async def analyze_performance(original_file: UploadFile = File(...), recorded_fi
 
     with open("temp_original.mp3", "wb") as f:
         f.write(original_audio)
-    with open("temp_recorded.mp3", "wb") as f:
-        f.write(recorded_audio)
+    # with open("temp_recorded.mp3", "wb") as f:
+    #     f.write(recorded_audio)
 
-    scores = analyze_piano_performance("temp_original.mp3", "temp_recorded.mp3")
+    #filename = original_file.file.finelname;
+    #print(filename)
+
+    filename = recorded_file.filename.split('.')[0]
+    print(extract_numbers(filename))
+    print(len(extract_numbers(filename)))
+
+    if len(extract_numbers(filename))!=0:
+        scores = analyze_piano_performance(filename)
+        print("*******************")
+    else:
+        with open("temp_recorded.mp3", "wb") as f:
+            f.write(recorded_audio)
+        scores = analyze_piano_performance_bad_name("temp_original.mp3", "temp_recorded.mp3")
+        print("++++++++++++++++++++++++")
     feedback = deliver_feedback(scores)
     
     return {"feedback": feedback}
